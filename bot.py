@@ -2400,28 +2400,27 @@ async def employee_request_action_handler(update, context):
     await update.message.reply_text("Выберите действие из меню.")
     return EMPLOYEE_VIEW_REQUEST
 
-async def employee_set_status_manual(update, context):
+async def employee_set_status_manual(update: Update, context: CallbackContext) -> int:
     status = update.message.text.strip()
     if status == "Отмена":
         return await employee_view_request(update, context)
 
     req = context.user_data["current_request"]
-    user = Database.get_user(req[1])
-
+    # обновляем статус в БД
     Database.update_request_status(req[0], status)
 
+    # уведомляем клиента
+    user = Database.get_user(req[1])
     custom_number = Database.get_ticket_rank(req[9], req[0])
-    created_at = datetime.fromisoformat(req[5]) if isinstance(req[5], str) else req[5]
-    date_str = created_at.strftime("%d.%m.%Y %H:%M")
-
-    # Уведомляем пользователя
     await context.bot.send_message(
         chat_id=user[0],
         text=f"✅ Статус вашей заявки #{custom_number} изменён на: {status}"
     )
 
-    # Уведомление в группу
-    text = (
+    # готовим новый текст для группы
+    created_at = datetime.fromisoformat(req[5]) if isinstance(req[5], str) else req[5]
+    date_str = created_at.strftime("%d.%m.%Y %H:%M")
+    new_text = (
         f"📌 Заявка #{custom_number}\n\n"
         f"🔧 Тип: {req[2]}\n"
         f"📝 Описание: {req[3]}\n"
@@ -2431,13 +2430,21 @@ async def employee_set_status_manual(update, context):
         f"📞 Телефон: {user[2]}\n"
         f"🏠 Адреса: {user[3]}"
     )
-    try:
-        await context.bot.edit_message_text(chat_id=GROUP_CHAT_ID, message_id=req[7], text=text)
-    except:
-        await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=text)
 
-    await update.message.reply_text(f"✅ Статус заявки #{custom_number} обновлён на: {status}")
-    return await employee_panel_handler(update, context)
+    # пытаемся отредактировать старое сообщение, иначе шлём новое
+    group_msg_id = req[7]
+    try:
+        await context.bot.edit_message_text(
+            chat_id=GROUP_CHAT_ID,
+            message_id=group_msg_id,
+            text=new_text
+        )
+    except:
+        sent = await context.bot.send_message(chat_id=GROUP_CHAT_ID, text=new_text)
+        Database.update_request_group_message_id(req[0], sent.message_id)
+
+    await update.message.reply_text(f"✅ Статус заявки #{custom_number} обновлён на: {status}", reply_markup=ReplyKeyboardMarkup([['Заявки'], ['Назад']], resize_keyboard=True))
+    return EMPLOYEE_PANEL
 
 
 async def employee_control_request_handler(update: Update, context: CallbackContext) -> int:
@@ -2728,31 +2735,46 @@ def format_report_text(report_number, request, user, brigade_name, report_text, 
 
 async def employee_report_files(update: Update, context: CallbackContext) -> int:
     """Обрабатываем либо медиа, либо нажатие 'Готово'."""
-    text = update.message.text or ""
-    # Если пользователь нажал Готово (с эмоджи или без)
-    if 'готов' in text.lower():
-        request_id = context.user_data.get("report_request_id")
-        user_id    = update.message.from_user.id
-        report_txt = context.user_data.get("report_text", "")
-        media_ids  = context.user_data.get("report_media_ids", [])
-        number     = get_report_count_for_request(request_id) + 1
+    text = update.message.text.strip()
+    request_id = context.user_data.get("report_request_id")
+    if not request_id:
+        await update.message.reply_text("Ошибка: заявка не определена.", reply_markup=ReplyKeyboardMarkup([['Заявки'], ['Назад']], resize_keyboard=True))
+        return EMPLOYEE_PANEL
 
-        save_report(request_id, user_id, number, report_txt, ",".join(media_ids))
+    # прикрепление файлов
+    if update.message.photo or update.message.document or update.message.video:
+        if update.message.photo:
+            file_id = update.message.photo[-1].file_id
+        elif update.message.video:
+            file_id = update.message.video.file_id
+        else:
+            file_id = update.message.document.file_id
+        context.user_data.setdefault("report_files", []).append(file_id)
+        await update.message.reply_text(f"Файл получен ({len(context.user_data['report_files'])}). Когда закончите — нажмите 'Готово'")
+        return EMPLOYEE_REPORT_FILES
 
-        # Подтверждаем и возвращаем к просмотру заявки
-        await update.message.reply_text("✅ Отчет сохранён.", reply_markup=ReplyKeyboardMarkup([['Заявки'], ['Назад']], resize_keyboard=True))
-        return EMPLOYEE_PANEL  # или: return await employee_view_request(update, context)
+    # нажатие кнопки Готово
+    if text == 'Готово':
+        files = context.user_data.get("report_files", [])
+        # спрашиваем, кому отправлять отчёт
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("В группу",       callback_data="report_to_group"),
+                InlineKeyboardButton("Админам",        callback_data="report_to_admin"),
+            ],
+            [
+                InlineKeyboardButton("Пользователю",   callback_data="report_to_user"),
+                InlineKeyboardButton("Всех сразу",     callback_data="report_to_all"),
+            ]
+        ])
+        await update.message.reply_text(
+            "Куда отправить отчёт?",
+            reply_markup=kb
+        )
+        return REPORT_RECIPIENTS
 
-    # Иначе — принимаем медиа
-    media_ids = context.user_data.setdefault("report_media_ids", [])
-    if update.message.photo:
-        media_ids.append(update.message.photo[-1].file_id)
-    elif update.message.document:
-        media_ids.append(update.message.document.file_id)
-    elif update.message.video:
-        media_ids.append(update.message.video.file_id)
-
-    await update.message.reply_text(f"Файл получен ({len(media_ids)}). Когда закончите — нажмите 'Готово'")
+    # если текст не «Готово» — возвращаемся к прикреплению
+    await update.message.reply_text("Прикрепите файлы или нажмите 'Готово'", reply_markup=ReplyKeyboardMarkup([['Готово']], resize_keyboard=True))
     return EMPLOYEE_REPORT_FILES
 
 async def view_reports_list(update: Update, context: CallbackContext) -> None:
@@ -2985,6 +3007,55 @@ async def show_reports(update: Update, context: CallbackContext):
         text = f"<b>Отчет #{report[3]}</b>\n{html.escape(report[4])}"  # report_number, text
         await context.bot.send_message(chat_id=query.from_user.id, text=text, parse_mode=ParseMode.HTML)
 
+async def handle_add_employee_name(update: Update, context: CallbackContext) -> int:
+    emp_id = context.user_data.get('new_emp_id')
+    if not emp_id:
+        await update.message.reply_text("Ошибка: ID сотрудника не найден. Начните заново.", reply_markup=universal_admin_keyboard)
+        return EMPLOYEE_MENU
+
+    # проверяем, есть ли уже такой сотрудник
+    if Database.get_employee(emp_id):
+        await update.message.reply_text(f"Сотрудник с ID {emp_id} уже существует.", reply_markup=employee_menu_keyboard)
+        return EMPLOYEE_MENU
+
+    name = update.message.text.strip()
+    Database.add_employee(emp_id, name)
+    await update.message.reply_text(f"Сотрудник {name} (ID {emp_id}) добавлен!", reply_markup=employee_menu_keyboard)
+    return EMPLOYEE_MENU
+
+async def handle_brigade_details(update: Update, context: CallbackContext) -> int:
+    text = update.message.text.strip()
+    try:
+        parts = [p.strip() for p in text.split(',')]
+        name = parts[0]
+        ids = [int(p) for p in parts[1:] if p.isdigit()]
+        if not name or not ids:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text(
+            "❌ Неверный формат. Введите так:\n"
+            "Название, id1, id2, id3",
+            reply_markup=universal_admin_keyboard
+        )
+        return BRIGADE_WAIT_FOR_DETAILS
+
+    # проверяем существование каждого сотрудника
+    invalid = [eid for eid in ids if not Database.get_employee(eid)]
+    if invalid:
+        await update.message.reply_text(
+            f"❌ Сотрудники с ID {', '.join(map(str, invalid))} не найдены в системе.",
+            reply_markup=universal_admin_keyboard
+        )
+        return BRIGADE_WAIT_FOR_DETAILS
+
+    # сохраняем корректную бригаду
+    Database.add_brigade(name, ids)
+    await update.message.reply_text(
+        f"✅ Бригада «{name}» создана ({len(ids)} чел.)",
+        reply_markup=brigade_menu_keyboard
+    )
+    return BRIGADE_MENU
+
 
 def main() -> None:
     TOKEN = os.environ.get('BOT_TOKEN', '7796857640:AAHQDsYweIILb-7H58B0JNFK5AGzrOhVj1E')
@@ -3135,6 +3206,5 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
 
 
