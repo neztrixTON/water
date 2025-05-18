@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------
 # Глобальные константы
-SYSTEM_ADMIN_ID = int(os.environ.get('SYSTEM_ADMIN_ID', '1276928573'))
-GROUP_CHAT_ID = int(os.environ.get('GROUP_CHAT_ID', '-1002590767988'))  # ID группы (форум-супергруппы)
+SYSTEM_ADMIN_ID = int(os.environ.get('SYSTEM_ADMIN_ID', '310083499'))
+GROUP_CHAT_ID = int(os.environ.get('GROUP_CHAT_ID', '-4743343026'))  # ID группы (форум-супергруппы)
 
 # Состояния для пользовательского диалога
 (
@@ -3058,7 +3058,7 @@ async def handle_brigade_details(update: Update, context: CallbackContext) -> in
 
 
 def main() -> None:
-    TOKEN = os.environ.get('BOT_TOKEN', '7796857640:AAHQDsYweIILb-7H58B0JNFK5AGzrOhVj1E')
+    TOKEN = os.environ.get('BOT_TOKEN', '8089002718:AAE5-BTHdznLcRfNNs3d_ZmtKWSwYTb4MPw')
     application = ApplicationBuilder().token(TOKEN).build()
 
     # ConversationHandler для фильтрации заявок/истории по дате
